@@ -1,0 +1,87 @@
+version: "3.9"
+
+services:
+  web:
+    build: ./app
+    container_name: yt-web
+    command: ["python", "app.py"]
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./downloads:/downloads
+      - /var/run/docker.sock:/var/run/docker.sock   # so we can docker exec ffmpeg-helper
+    environment:
+      - FLASK_ENV=development
+      - DATABASE_URL=postgresql+psycopg2://ytuser:ytpass@postgres:5432/ytdb
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - DOWNLOAD_DIR=/downloads
+      - FFMPEG_CONTAINER=ffmpeg-helper
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      ffmpeg-helper:
+        condition: service_started
+
+  worker:
+    build: ./app
+    container_name: yt-worker
+    command: ["python", "worker.py"]
+    volumes:
+      - ./downloads:/downloads
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://ytuser:ytpass@postgres:5432/ytdb
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - DOWNLOAD_DIR=/downloads
+      - FFMPEG_CONTAINER=ffmpeg-helper
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      ffmpeg-helper:
+        condition: service_started
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ytuser
+      POSTGRES_PASSWORD: ytpass
+      POSTGRES_DB: ytdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ytuser -d ytdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"    # management UI
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ffmpeg-helper:
+    image: linuxserver/ffmpeg:latest
+    container_name: ffmpeg-helper
+    volumes:
+      - ./downloads:/downloads
+    entrypoint: ["tail", "-f", "/dev/null"]  # keep container running
+
+volumes:
+  pgdata:

@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>🎧 YT Downloader</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<div class="app-shell">
+  <div class="card glass">
+    {% if user %}
+      <p style="margin-bottom:10px;">👋 Hello, {{ user.email }} | <a href="{{ url_for('logout') }}">Logout</a></p>
+    {% else %}
+      <p style="margin-bottom:10px;"><a href="{{ url_for('login') }}">Login</a> or <a href="{{ url_for('register') }}">Register</a></p>
+    {% endif %}
+
+    <h1>🎧 YT Downloader</h1>
+
+    {% if user %}
+    <form id="url-form">
+      <input type="text" id="url" placeholder="Paste YouTube URL..." required>
+      <button type="submit">Get Formats</button>
+    </form>
+    {% else %}
+      <p>Please <a href="{{ url_for('login') }}">login</a> to use the downloader.</p>
+    {% endif %}
+
+    <div id="preview" class="preview-wrapper" style="display:none;">
+      <img id="yt-thumb" class="preview-thumb" src="" alt="Preview thumbnail">
+      <div id="play-overlay" class="play-overlay"><span>▶</span></div>
+      <div id="player-container" class="yt-embed" style="display:none;">
+        <iframe id="yt-frame"
+                src=""
+                title="YouTube video player"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                referrerpolicy="strict-origin-when-cross-origin"
+                allowfullscreen>
+        </iframe>
+      </div>
+    </div>
+
+    <div id="formats"></div>
+  </div>
+
+  <div class="card glass" id="job-status" style="display:none;">
+    <h2>Progress</h2>
+    <p id="job-text">Waiting...</p>
+  </div>
+</div>
+
+<script>
+const form = document.getElementById('url-form');
+
+if (form) {
+  const formatsDiv = document.getElementById('formats');
+  const jobBox = document.getElementById('job-status');
+  const jobText = document.getElementById('job-text');
+  const previewBox = document.getElementById('preview');
+  const ytFrame = document.getElementById('yt-frame');
+  const thumbImg = document.getElementById('yt-thumb');
+  const playerContainer = document.getElementById('player-container');
+  const playOverlay = document.getElementById('play-overlay');
+
+  function extractYoutubeId(url) {
+    try {
+      const u = new URL(url);
+      if (u.hostname.includes('youtu.be')) return u.pathname.slice(1);
+      if (u.searchParams.get('v')) return u.searchParams.get('v');
+      const parts = u.pathname.split('/');
+      const embedIndex = parts.indexOf('embed');
+      if (embedIndex !== -1 && parts[embedIndex + 1]) return parts[embedIndex + 1];
+    } catch (_) {}
+    return null;
+  }
+
+  function formatSize(bytes) {
+    if (!bytes || isNaN(bytes)) return "";
+    if (bytes < 1024) return bytes + " B";
+    const kb = bytes / 1024;
+    if (kb < 1024) return kb.toFixed(1) + " KB";
+    const mb = kb / 1024;
+    return mb.toFixed(1) + " MB";
+  }
+
+  // turn numeric resolution/fps into nice text
+  function renderResolution(f) {
+    const w = f.width || 0;
+    const h = f.height || 0;
+    const fps = f.fps;
+    let label = f.resolution || "";
+
+    if (h >= 2160) label = "4K UHD";
+    else if (h >= 1440) label = "2K QHD";
+    else if (h >= 1080) label = "FHD 1080p";
+    else if (h >= 720)  label = "HD 720p";
+    else if (h > 0)     label = "SD";
+
+    // add refresh if present
+    if (fps && [24,25,30,50,60].includes(fps)) {
+      label += ` ${fps} Hz`;
+    } else if (fps) {
+      label += ` ${fps} Hz`;
+    }
+
+    return label;
+  }
+
+  // play overlay → show iframe
+  playOverlay.addEventListener('click', () => {
+    playOverlay.style.display = 'none';
+    thumbImg.style.display = 'none';
+    playerContainer.style.display = 'block';
+    // Use a clean parameter addition to prevent appending ?autoplay=1 multiple times
+    if (!ytFrame.src.includes('autoplay=1')) {
+        ytFrame.src += "?autoplay=1";
+    }
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    formatsDiv.innerHTML = 'Loading...';
+    const url = document.getElementById('url').value;
+    const fd = new FormData();
+    fd.append('url', url);
+
+    // show preview
+    const vid = extractYoutubeId(url);
+    if (vid) {
+      previewBox.style.display = 'block';
+      const thumb = `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
+      thumbImg.src = thumb;
+      thumbImg.style.display = 'block';
+      playOverlay.style.display = 'flex';
+      playerContainer.style.display = 'none';
+      ytFrame.src = `https://www.youtube.com/embed/${vid}`;
+    } else {
+      previewBox.style.display = 'none';
+    }
+
+    try {
+      const res = await fetch('/formats', {method:'POST', body:fd});
+      const data = await res.json();
+      
+      if (data.error) {
+        formatsDiv.innerHTML = `<p style="color: red;">${data.error}</p>`;
+        return;
+      }
+
+      const table = document.createElement('table');
+      table.innerHTML = '<tr><th>itag</th><th>Resolution</th><th>Quality</th><th>Codec</th><th>Size</th><th>Best For</th><th>Action</th></tr>';
+
+      data.formats.forEach(f => {
+        const tr = document.createElement('tr');
+        const isAudio = f.best_for === 'audio';
+        tr.innerHTML = `
+          <td>${f.itag || ''}</td>
+          <td>${renderResolution(f)}</td>
+          <td>${f.quality || ''}</td>
+          <td>${f.codec || ''}</td>
+          <td>${formatSize(f.size)}</td>
+          <td>${f.best_for || ''}</td>
+          <td><button class="dl-btn" data-quality="${f.quality || ''}" data-is-audio="${isAudio}">Download ${isAudio ? 'Audio' : 'Video'}</button></td>
+        `;
+        table.appendChild(tr);
+      });
+
+      formatsDiv.innerHTML = '';
+      formatsDiv.appendChild(table);
+
+      // FIX: Select by class or correct data attribute instead of 'data-itag'
+      table.querySelectorAll('.dl-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const quality = btn.dataset.quality;
+          const isAudio = btn.dataset.isAudio === 'true'; // JS converts boolean to string in dataset
+          
+          const dlForm = new FormData();
+          dlForm.append('url', url);
+          dlForm.append('quality', quality);
+          dlForm.append('audio_only', isAudio);
+          
+          // Disable button to prevent spam clicking
+          btn.disabled = true;
+          btn.innerText = 'Starting...';
+
+          try {
+            const rs = await fetch('/download', {method:'POST', body: dlForm});
+            const j = await rs.json();
+            
+            if (j.job_id) {
+              jobBox.style.display = 'block';
+              pollJob(j.job_id);
+            } else {
+              alert(j.error || 'Unknown Error');
+              btn.disabled = false;
+              btn.innerText = `Download ${isAudio ? 'Audio' : 'Video'}`;
+            }
+          } catch (err) {
+            alert('Failed to contact server.');
+            btn.disabled = false;
+            btn.innerText = `Download ${isAudio ? 'Audio' : 'Video'}`;
+          }
+        });
+      });
+    } catch (err) {
+      formatsDiv.innerHTML = `<p style="color: red;">Failed to load formats.</p>`;
+    }
+  });
+
+  async function pollJob(jobId) {
+    try {
+      const r = await fetch('/progress/' + jobId);
+      const d = await r.json();
+      
+      if (d.error) {
+        jobText.innerText = d.error;
+        return;
+      }
+      
+      jobText.innerText = `Status: ${d.status} (${d.progress}%)`;
+      
+      if (d.status === 'done') {
+        if (d.download_url) {
+          jobText.innerHTML += `<br><br><a href="${d.download_url}" target="_blank" style="padding: 10px; background: #4CAF50; color: white; text-decoration: none; border-radius: 5px;">Download File</a>`;
+        }
+      } else if (d.status === 'error' || d.status === 'failed') {
+        jobText.innerHTML += `<br>Error: ${d.error_message || d.error || 'Failed'}`;
+      } else {
+        setTimeout(() => pollJob(jobId), 2000);
+      }
+    } catch (err) {
+      jobText.innerHTML += `<br>Error: Lost connection to server.`;
+    }
+  }
+}
+</script>
+</body>
+</html>
